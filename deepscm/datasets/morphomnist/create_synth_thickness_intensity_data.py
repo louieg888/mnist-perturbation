@@ -38,6 +38,70 @@ def model(n_samples=None, scale=0.5, invert=False):
 
     return thickness, intensity
 
+def get_covariate_thickness_intensity(labels, images, change_thickness=True, change_intensity=False, invert=False):
+    # default digit class: [0, 9]
+    # desired thickness mapping: [1, 5]
+        # let's do linear mapping to [1.5, 4.5] and then let 2sd's hit the limits (2sd = 0.5)
+        # remember to clip at like 0.5
+    # desired intensity mapping: [50, 250]
+        # let's do linear mapping to [75, 225] and then let 2sd's hit the limits (2sd = 25)
+        # remember to clip at like 50 and 256
+
+    n_samples = len(labels)
+    
+    if change_thickness:
+        thickness = []
+        for image_idx, label in enumerate(labels):
+            thickness_affine_min = 1
+            thickness_affine_max = 4.5
+            thickness_range = thickness_affine_max - thickness_affine_min
+
+            thickness_value = thickness_affine_min + label / 9. * (thickness_range)
+            thickness_value = thickness_value + np.random.normal(0, 0.5)
+
+            if invert: 
+                thickness_value = 5.5 - thickness_value
+
+            thickness_value = max(thickness_value, 0.5)
+            thickness_value = min(thickness_value, 5.25)
+
+
+            thickness.append(thickness_value)
+    else: 
+        thickness = []
+        for image_idx, image in enumerate(images):
+            morph = ImageMorphology(image, scale=16)
+            thickness.append(morph.mean_thickness)
+
+    if change_intensity: 
+        intensity = []
+        for image_idx, label in enumerate(labels):
+            intensity_affine_min = 75
+            intensity_affine_max = 225
+            intensity_range = intensity_affine_max - intensity_affine_min
+
+            intensity_value = intensity_affine_min + label / 9. * (intensity_range)
+            intensity_value = intensity_value + np.random.normal(0, 30)
+
+            if invert: 
+                intensity_value = 255 - intensity_value
+
+            intensity_value = max(intensity_value, 50)
+            intensity_value = min(intensity_value, 255)
+
+
+            intensity.append(intensity_value)
+    else: 
+        intensity = [get_intensity(img) for img in images]
+        #for image_idx, image in enumerate(images):
+        #    morph = ImageMorphology(image, scale=16)
+        #    if image_idx % 100 == 0: 
+        #        print(image_idx)
+        #    intensity.append(get_intensity(morph.image))
+
+    return thickness, intensity
+
+    
 
 def gen_dataset(args, train=True):
     pyro.clear_param_store()
@@ -51,21 +115,42 @@ def gen_dataset(args, train=True):
     images = np.zeros_like(images_)
 
     n_samples = len(images)
-    with torch.no_grad():
-        thickness, intensity = model(n_samples, scale=args.scale, invert=args.invert)
+    #import pdb; pdb.set_trace()
+    thickness, intensity = get_covariate_thickness_intensity(labels, images_, args.change_thickness, args.change_intensity, invert=not train)
+    #import pdb; pdb.set_trace()
+    #with torch.no_grad():
+        #thickness, intensity = model(n_samples, scale=args.scale, invert=args.invert)
 
     metrics = pd.DataFrame(data={'thickness': thickness, 'intensity': intensity})
 
+    #for n, (thickness, intensity) in enumerate(tqdm(zip(thickness, intensity), total=n_samples)):
     for n, (thickness, intensity) in enumerate(tqdm(zip(thickness, intensity), total=n_samples)):
+        #if labels[n] == 0:
+            #import pdb; pdb.set_trace()
+
+        #if labels[n] == 9: 
+            #import pdb; pdb.set_trace()
+
+        if n == 100: 
+            break
+
         morph = ImageMorphology(images_[n], scale=16)
-        tmp_img = morph.downscale(np.float32(SetThickness(thickness)(morph)))
+
+        if args.change_thickness: 
+            tmp_img = morph.downscale(np.float32(SetThickness(thickness)(morph)))
+        else: 
+            tmp_img = morph.downscale(np.float32(morph))
 
         avg_intensity = get_intensity(tmp_img)
 
-        mult = intensity.numpy() / avg_intensity
-        tmp_img = np.clip(tmp_img * mult, 0, 255)
+         
+        mult = intensity / avg_intensity
+        
+        if args.change_intensity: 
+            tmp_img = np.clip(tmp_img * mult, 0, 255)
 
         images[n] = tmp_img
+
 
     # TODO: do we want to save the sampled or the measured metrics?
 
@@ -75,6 +160,8 @@ def gen_dataset(args, train=True):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument('--change-thickness', default=True, action='store_true')
+    parser.add_argument('--change-intensity', default=False, action='store_true')
     parser.add_argument('--data-dir', type=str, default='/vol/biomedic/users/dc315/mnist/original/', help="Path to MNIST (default: %(default)s)")
     parser.add_argument('-o', '--out-dir', type=str, help="Path to store new dataset")
     parser.add_argument('-d', '--digit-class', type=int, choices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], help="digit class to select")
