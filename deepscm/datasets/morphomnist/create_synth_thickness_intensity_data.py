@@ -4,6 +4,8 @@ import pandas as pd
 import pyro
 import torch
 
+from joblib import Parallel, delayed
+
 from pyro.distributions import Gamma, Normal, TransformedDistribution
 from pyro.distributions.transforms import SigmoidTransform, AffineTransform, ComposeTransform
 
@@ -11,6 +13,8 @@ from tqdm import tqdm
 
 from deepscm.datasets.morphomnist import load_morphomnist_like, save_morphomnist_like
 from deepscm.datasets.morphomnist.transforms import SetThickness, ImageMorphology
+
+NUM_CORES = 8
 
 
 def get_intensity(img):
@@ -76,17 +80,17 @@ def get_covariate_thickness_intensity(labels, images, change_thickness=True, cha
     if change_intensity: 
         intensity = []
         for image_idx, label in enumerate(labels):
-            intensity_affine_min = 75
+            intensity_affine_min = 125 
             intensity_affine_max = 225
             intensity_range = intensity_affine_max - intensity_affine_min
 
             intensity_value = intensity_affine_min + label / 9. * (intensity_range)
-            intensity_value = intensity_value + np.random.normal(0, 30)
+            intensity_value = intensity_value + np.random.normal(0, 25)
 
             if invert: 
-                intensity_value = 255 - intensity_value
+                intensity_value = 255 - intensity_value + 75 
 
-            intensity_value = max(intensity_value, 50)
+            intensity_value = max(intensity_value, 75)
             intensity_value = min(intensity_value, 255)
 
 
@@ -124,6 +128,40 @@ def gen_dataset(args, train=True):
     metrics = pd.DataFrame(data={'thickness': thickness, 'intensity': intensity})
 
     #for n, (thickness, intensity) in enumerate(tqdm(zip(thickness, intensity), total=n_samples)):
+
+    def get_processed_image(n, thickness, intensity):
+        morph = ImageMorphology(images_[n], scale=16)
+
+        if args.change_thickness: 
+            tmp_img = morph.downscale(np.float32(SetThickness(thickness)(morph)))
+        else: 
+            tmp_img = morph.downscale(np.float32(morph))
+
+        avg_intensity = get_intensity(tmp_img)
+
+         
+        mult = intensity / avg_intensity
+        
+        if args.change_intensity: 
+            tmp_img = np.clip(tmp_img * mult, 0, 255)
+
+        return tmp_img
+
+    testing = False
+
+    if testing: 
+        thickness = thickness[:100]
+        intensity = intensity[:100]
+        labels = labels[:100]
+        metrics = metrics[:100]
+        n_samples = 100
+
+    images = Parallel(n_jobs=NUM_CORES)(delayed(get_processed_image)(n, thickness, intensity) for n, (thickness, intensity) in enumerate(tqdm(zip(thickness, intensity), total=n_samples)))
+
+
+    save_morphomnist_like(images, labels, metrics, args.out_dir, train=train)
+
+"""
     for n, (thickness, intensity) in enumerate(tqdm(zip(thickness, intensity), total=n_samples)):
         #if labels[n] == 0:
             #import pdb; pdb.set_trace()
@@ -132,7 +170,8 @@ def gen_dataset(args, train=True):
             #import pdb; pdb.set_trace()
 
         if n == 100: 
-            break
+            #break
+            pass
 
         morph = ImageMorphology(images_[n], scale=16)
 
@@ -151,10 +190,11 @@ def gen_dataset(args, train=True):
 
         images[n] = tmp_img
 
+"""
+
 
     # TODO: do we want to save the sampled or the measured metrics?
 
-    save_morphomnist_like(images, labels, metrics, args.out_dir, train=train)
 
 
 if __name__ == '__main__':
